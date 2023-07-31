@@ -1,0 +1,1017 @@
+---
+title: "Car Insurance Claims"
+author: "The miners"
+date: "2022-12-11"
+output:
+  html_document:
+    theme: paper
+    highlight: tango
+    toc: yes
+    toc_float: yes
+    toc_collapsed: yes
+    toc_depth: 4
+  pdf_document:
+    toc: yes
+    toc_depth: '4'
+---
+
+```{r setup, include=FALSE,warning=FALSE,cache=TRUE}
+knitr::opts_chunk$set(echo = TRUE,warning=FALSE,cache=TRUE)
+```
+
+# Code only
+
+```{r,warning=FALSE,message=FALSE}
+# Libraries
+library(naniar)       # Missing values
+library(ggplot2)      # Graphics
+library(dplyr)        # Manipulate data
+library(tidyr)        # Create tidy data
+library(randomForest) # Random forest
+library(corrplot)     # Plot correlations
+library(knitr)        #Table presentation
+library(GGally)       # Correlation and scatter plots
+library(class)        # knn
+library(rpart)        # trees
+library(caret)        # preprocess data
+library(rpart.plot)   # plot trees
+library(forecast)     # accuracy
+library(neuralnet)    # Neural network
+library(CustomerScoringMetrics) #Lift and gain
+library(data.table)
+
+# Local importation
+source("PlotResidLogist.R") # Deviance Residuals
+```
+
+
+
+## EDA
+
+
+```{r,warning=FALSE}
+cars <- read.csv("train.csv", sep=",", header = TRUE)# Original data set
+
+str(cars) # types of variable and dimensions
+
+cars <- cars[,c(-1)] # Drop ID
+
+sapply(cars,function(x) length(unique(x))) # Check unique values
+
+gg_miss_var(cars, show_pct = TRUE) # See if any missing value
+```
+
+#### Plots for all variables
+
+```{r warning=FALSE}
+#Histograms
+cars %>% select(1:3, 5:6,13,20:21,23,25:29,42:43) %>% gather() %>% 
+ ggplot(aes(value)) + 
+ facet_wrap(~ key, scales = "free") + # Display figures in many facets
+ geom_histogram(color = "black", fill = "#6baed6") + 
+ theme_minimal()
+
+
+# Barcharts
+cars %>% select(4,7:12,14:19,22,24,30:41) %>% gather() %>%
+ ggplot(aes(x = value)) +
+ facet_wrap(~ key, scales = "free") + # Display figures in many facets
+ geom_bar(color = "black", fill = "#6baed6") +
+ theme_minimal()
+```
+
+#### correlation analysis in order to drop the highly corrletted ones
+
+```{r}
+cars_numeric <- cars[,c(1:3,5:6,13,20:21,23,25:29,42)] # Only numerical values
+
+# Correlations
+cor2 <- data.frame(round(cor(cars_numeric),3)) # Table with correlations
+cor2
+
+# Plot correlations
+corrplot(as.matrix(cor2),  # Plot of upper right part
+         order = 'AOE',
+         type = 'lower',
+         tl.pos = "lt",
+         tl.cex = 0.5,)
+
+corrplot(as.matrix(cor2), # Plot of lower left part
+         add = TRUE, type = 'upper',
+         method = 'ellipse',
+         order = 'AOE',
+         diag = FALSE,
+         tl.pos = 'n',
+         cl.pos = 'n',
+         tl.cex = 0.5)
+
+# Dropping variables based on correlation
+cars_reduced <- cars[,-c(20,13,23,25,29)]
+```
+
+
+#### Random forest for variable selection
+
+```{r}
+#Random forest
+ rf_fit <- randomForest(as.factor(cars$is_claim) ~ .,#Fit
+                         data = cars_reduced,
+                         ntree = 500,
+                         mtry = 4, # variables randomly sampled as candidates at each # split.
+                     importance = TRUE)
+
+varImpPlot(rf_fit, type = 1) # Variable importance
+sort(round(rf_fit$importance[,4],3), decreasing = TRUE)[1:19]
+
+#Variables keeped by the random forest
+cars_reduced_rf <- cars_reduced[,c("policy_tenure","age_of_car",
+                                   "age_of_policyholder","population_density",
+                                   "area_cluster","height","width","segment",
+                                   "model","length","engine_type","max_torque",
+                                   "max_power","ncap_rating","cylinder")]
+```
+
+#### Dropping variables based on random forest analysis and correlation
+
+```{r}
+# Correlations
+cor3 <- data.frame(round(cor(cars_reduced_rf[,c(1:4,6,7,10,14,15)]),3))
+cor3
+
+corrplot(as.matrix(cor3), # Plot of lower left part
+         order = 'AOE',
+         type = 'lower',
+         tl.pos = "lt",
+         tl.cex = 0.5,)
+
+corrplot(as.matrix(cor3), add = TRUE, # Plot of upper right part
+         type = 'upper',
+         method = 'ellipse',
+         order = 'AOE',
+         diag = FALSE,
+         tl.pos = 'n',
+         cl.pos = 'n',
+         tl.cex = 0.5)
+
+
+
+# Filtering variables based on domain knowledge and correlations
+cars_reduced <- cars_reduced_rf[,-c( 7,8,11,12,13,14,15)]# Drop variables
+
+cars_final <- cbind(cars_reduced, cars$is_claim) # Bind explanatory variable
+
+colnames(cars_final)[9] <- "is_claim" # Rename column
+```
+
+#### Logistic regression
+
+```{r}
+# We drop height and weight, and length since model defines these features.
+
+logistic_regression_final_variables <- glm(is_claim~.,
+                                           family=binomial(link='logit'),
+                                           data= cars_final[,-c(6,8)])
+
+summary(logistic_regression_final_variables)
+
+```
+
+```{r}
+logistic_regression_final_variables <- glm(is_claim~.,
+                                           family=binomial(link='logit')
+                                           , data= cars_final[,-c(5,7,4)])
+
+summary(logistic_regression_final_variables)
+```
+
+#### Final dataset after dropping some variables by using logistic regression
+
+```{r}
+cars_final <- cars_final[,-c(5,6,8)]
+kable(head(cars_final), format="markdown")
+```
+
+
+```{r}
+#Histograms
+cars_final %>% select(1:4,6) %>% gather() %>% 
+ ggplot(aes(value)) + 
+ facet_wrap(~ key, scales = "free") + 
+ geom_histogram(color = "black", fill = "#6baed6") + 
+  theme(plot.title=element_text(hjust=0.5),
+        panel.background = element_rect(fill = "white"),
+        panel.grid.major.y = element_line(color = "grey98")) 
+```
+
+```{r}
+# Barcharts
+cars_final %>% select(5)  %>% gather() %>%
+ ggplot(aes(x = value)) +
+ facet_wrap(~ key, scales = "free") +
+ geom_bar(color = "black", fill = "#6baed6") +
+  theme(plot.title=element_text(hjust=0.5),
+        panel.background = element_rect(fill = "white"),
+        panel.grid.major.y = element_line(color = "grey98"))
+
+
+# boxplot
+cars_final %>% select(1:4)  %>% gather() %>%
+ ggplot(aes(x = value,y="")) +
+  
+  facet_wrap(~ key, scales = "free")+
+                   # add horizontal line to "whiskers" of boxplot
+  geom_boxplot(fill = "#6baed6", width = 0.5) + 
+  stat_boxplot(geom = "errorbar", width = 0.2) +# plot boxplot
+  stat_summary(fun.y=mean, colour="darkred", geom="point", shape=18, size=3,show_guide = FALSE)+
+  theme_classic() +
+  theme(plot.title=element_text(hjust=0.5),
+        panel.background = element_rect(fill = "white"),
+        panel.grid.major.y = element_line(color = "grey98")) 
+
+
+```
+
+#### Scaling and normalizing policy tenure and population density
+
+```{r}
+# Adjust scale with log for population density
+cars_final$population_density <- log(cars_final$population_density)
+
+# Normalizing population_density
+normalized.pop <- (cars_final$population_density - min (cars_final$population_density)) / (max(cars_final$population_density)-min(cars_final$population_density))
+
+cars_final$population_density <- as.vector(normalized.pop)
+
+
+# Normalizing policy tenure
+normalized.policy <- (cars_final$policy_tenure - min (
+  cars_final$policy_tenure)) / (max(
+    cars_final$policy_tenure)-min(
+      cars_final$policy_tenure))
+
+cars_final$policy_tenure <- as.vector(normalized.policy)
+```
+
+```{r}
+# boxplot
+cars_final %>% select(1:4)  %>% gather() %>%
+ ggplot(aes(x = value,y="")) +
+  
+  facet_wrap(~ key, scales = "free")+
+                   # add horizontal line to "whiskers" of boxplot
+  geom_boxplot(fill = "#6baed6", width = 0.5) + 
+  stat_boxplot(geom = "errorbar", width = 0.2) +# plot boxplot
+  stat_summary(fun.y=mean, colour="darkred", geom="point", shape=18, size=3,show_guide = FALSE)+
+  theme_classic() +
+  theme(plot.title=element_text(hjust=0.5),
+        panel.background = element_rect(fill = "white"),
+        panel.grid.major.y = element_line(color = "grey98")) 
+```
+
+#### 6 first observations
+
+```{r}
+kable(summary(cars_final), format="markdown")
+```
+
+```{r}
+#boxplot for the distribution of 0 1 
+df = cars_final[, -5] 
+df$is_claim <- as.factor(df$is_claim)
+library(reshape2)
+df.melt = melt(df)
+# HEAD
+
+df.boxplot = ggplot(df.melt, aes(y=value,is_claim)) + 
+  geom_boxplot() + 
+  facet_wrap(~variable, scales = "free", ncol=3) + 
+  theme_classic() + 
+  xlab("Variables")
+
+df.boxplot
+
+```
+
+## Data preparation
+
+```{r}
+set.seed(1)
+index <- sample(nrow(cars_final),nrow(cars_final)*0.60)
+cars_train = cars_final[index,]
+cars_validation = cars_final[-index,]
+proportions(table(cars_train$is_claim))
+proportions(table(cars_validation$is_claim))
+
+# Downsample 
+cars_train[,6] <- as.factor(cars_train$is_claim)
+train_downsampling <- downSample(cars_train[,-6],cars_train$is_claim,yname = "is_claim")
+
+# Normalizing function
+normalizing <- function(x) {
+    (x - min(x)) / (max(x) - min(x))
+}
+
+# Normalizing variables again on downsample's basis:
+
+# Normalizing train data - downsampled
+train_downsampling[,c(1:4)] <- lapply(train_downsampling[,c(1:4)], normalizing)
+
+# Normalizing validation data
+cars_validation[,c(1:4)] <- lapply(cars_validation[,c(1:4)], normalizing)
+
+
+summary(cars_validation)
+```
+
+## Classification tree
+
+```{r}
+tree_fit <- rpart(train_downsampling$is_claim ~.,
+                  data = train_downsampling, # Data set
+                  cp = 0.001,
+                  method = "class") # Method: Classification
+
+
+rpart.plot(tree_fit) # Plot the resulting tree
+
+
+
+# Predict values for validation set
+pred_tree_v_tr <- predict(tree_fit,
+                         cars_validation[,c(-6)],
+                         type ="class")
+```
+
+#### Finding the optimal CP
+```{r}
+# Find the best cp with minimal xerror ||  /!\ code may need to be improved
+cp_minimal <- tree_fit$cptable[which.min(
+  tree_fit$cptable[,"CP"]), # Take lowest cp and Take lowest xerror
+  1]# CP column 
+
+pruned.tree <- prune(tree_fit, cp= cp_minimal) # Prune the train model with lowest cp
+```
+
+#### Finding best size tree
+```{r}
+# Cross-validation
+
+table_cp <- pruned.tree$cptable # Save cps
+
+# DOES SOMEONE HAVE A BETTER METHOD ?
+rows_small_errors_std <- head(order(table_cp[,5]),6) # Know the rows (folds) having  the smallest standard errors of the estimates
+
+table_error <- matrix(table_cp[,4] + table_cp[,5]) # Sum the std error and the error
+
+table_error <- cbind(table_cp[,1], # Include CP
+                     table_cp[,2], # Include nsplit
+                     table_error,  # Error + std error
+                     table_cp[,5]) # Std error
+
+rows_small_errors_std <- head(sort(table_error[,4]),6) # Know the rows (folds) having  the smallest std error
+rows_small_errors <- head(sort(table_error[,3]),6) # Display the smallest standard errors
+
+rows_small_errors_std # Display and chose the best size
+rows_small_errors # Display
+
+kable(table_cp)
+
+best_cp <- table_cp[as.integer(names(rows_small_errors)[1]),1]
+```
+
+```{r}
+pruned.tree <- prune(tree_fit, cp = best_cp) # Prune the train model with best cp
+
+rpart.plot(pruned.tree) # Plot the tree with best size
+
+sum(pruned.tree$frame$ncompete == 0) # Number of leaves
+```
+
+### Performance evaluation
+
+```{r}
+# Confusion matrix for classification tree with validation set
+conf_matrix_tree_v <- confusionMatrix(
+  pred_tree_v_tr,
+  factor(cars_validation$is_claim),
+  positive = "1")
+conf_matrix_tree_v
+# plot confusion matrix
+fourfoldplot(conf_matrix_tree_v$table,
+             color = c("cyan", "pink"),
+             conf.level = 0,
+             margin = 1,
+             main = "Confusion Matrix for Classification
+             Tree for validation set") 
+```
+
+```{r}
+# Prediction on Validation data
+pred_tree_v_pruned <- predict(pruned.tree, # Pruned tree
+                         cars_validation[,c(-16)],# Validation set
+                         type ="class")
+
+# Confusion matrix for classification tree with validation set
+conf_matrix_tree_v <- confusionMatrix(
+  pred_tree_v_pruned,
+  factor(cars_validation$is_claim),
+  positive = "1")
+conf_matrix_tree_v
+
+# plot confusion matrix
+fourfoldplot(conf_matrix_tree_v$table,
+             color = c("cyan", "pink"),
+             conf.level = 0,
+             margin = 1,
+             main = "Confusion Matrix for Classification
+             Tree (best size) for validation set") 
+
+```
+
+#### Lift Chart
+
+```{r}
+#Getting the probabilities from the model
+tree.outcome <- as.data.frame(predict(pruned.tree, # Pruned tree
+                         cars_validation[,c(-16)],# Validation set
+                         type ="prob"))[,2]
+
+
+#Lift chart plot 
+liftChart(tree.outcome,  factor(cars_validation$is_claim))
+```
+
+```{r}
+topDecileLift(tree.outcome,  factor(cars_validation$is_claim))
+```
+
+## KNN
+
+### Data transformation
+
+```{r}
+# Add dummy variables 
+cars_final$model <- as.factor(cars_final$model)                       # change variable format to factor 
+
+dummies <- dummyVars(~ ., data = cars_final)                             # create object for dummy variables
+cars_final_dummy <- as.data.frame(predict(dummies,
+                                          newdata = cars_final))      # apply dummies to data
+
+cars_final$is_claim <- as.factor(cars_final$is_claim)                # change variable format to factor
+cars_final_dummy$is_claim <- as.factor(cars_final_dummy$is_claim) 
+
+head(cars_final_dummy)                                                  # resulting in 11
+str(cars_final_dummy)
+
+
+train_dummy <- cars_final_dummy[index,] # training set with dummies  
+valid_dummy <- cars_final_dummy[-index,] #validation set with dummies
+train_dummy_downsampled <- downSample(train_dummy[,-16],
+                                      train_dummy$is_claim,yname = "is_claim") # undersampling for having same probation 
+
+# Normalizing data
+train_dummy_downsampled[,c(1:4)] <- lapply(train_dummy_downsampled[,c(1:4)], normalizing)
+
+valid_dummy[,c(1:4)] <- lapply(valid_dummy[,c(1:4)], normalizing)
+```
+
+#### Loop for finding the optimum k for each measurement
+
+```{r}
+set.seed(1)
+# Find optimal k
+
+# Data frame for k from 1 to 50 and respective accuracy
+accuracy <- data.frame(k = seq(1, 50, 1),
+                       overallaccuracy = rep(0, 50))  
+
+# Use for loop to find k with highest accuracy
+for (i in 1:50) {
+  knn.pred<-knn(train_dummy_downsampled[,-16],
+                valid_dummy[,-16],
+                cl=train_dummy_downsampled[,16],k=i)
+  accuracy[i,2]<-confusionMatrix(knn.pred,
+                                 valid_dummy[,16])$overall[1]
+} 
+# Data frame for k from 1 to 50 and respective specificity
+Specificity <-  data.frame(k = seq(1, 50, 1),
+                           overallspecificity = rep(0, 50))
+
+# Use for loop to find k with highest specificity
+for (i in 1:50) {
+  knn.pred<-knn(train_dummy_downsampled[,-16],
+                valid_dummy[,-16],
+                cl=train_dummy_downsampled[,16],k=i)
+  Specificity[i,2]<-confusionMatrix(knn.pred,
+                                    valid_dummy[,16])$byClass[2]
+} 
+# Data frame for k from 1 to 50 and respective Sensitivity 
+Sensitivity  <-  data.frame(k = seq(1, 50, 1),
+                            overallSensitivity  = rep(0, 50))
+
+# Use for loop to find k with highest Sensitivity 
+for (i in 1:50) {
+  knn.pred<-knn(train_dummy_downsampled[,-16],
+                valid_dummy[,-16],
+                cl=train_dummy_downsampled[,16],k=i)
+  Sensitivity[i,2]<-confusionMatrix(knn.pred,
+                                    valid_dummy[,16])$byClass[1]
+} 
+
+
+
+```
+
+#### Max k
+
+```{r}
+which(accuracy[,2] == max(accuracy[,2]))   # max accuracy
+which(Specificity[,2] == max(Specificity[,2]))   # max specificity 
+which(Sensitivity[,2] == max(Sensitivity[,2]))   # max specificity 
+```
+
+#### Plotting results
+
+```{r}
+# Plot accuracy for different k
+ggplot(accuracy, aes(k, overallaccuracy)) + 
+  geom_line() + 
+  theme_minimal() +
+  labs (title = "K nearest neighbours: Overall accuracy vs K", 
+        y = "Accuracy", 
+        x = "k nearest neigbours" )
+
+# Plot Sensitivity for different k
+ggplot(Sensitivity, aes(k, overallSensitivity)) + 
+  geom_line() + 
+  theme_minimal() +
+  labs (title = "K nearest neighbours: Overall Sensitivity vs K", 
+        y = "Sensitivity", 
+        x = "k nearest neigbours" )
+
+# Plot specificity for different k
+ggplot(Specificity, aes(k, overallspecificity)) + 
+  geom_line() + 
+  theme_minimal() +
+  labs (title = "K nearest neighbours: Overall specificity vs K", 
+        y = "Specificity", 
+        x = "k nearest neigbours" )
+
+
+```
+
+#### Prediction and confusion matrix for knn
+
+```{r}
+knn.pred.valid <- knn(train_dummy_downsampled[, -16], valid_dummy[, -16], cl = train_dummy_downsampled[, 16], k = 41 ,prob = T)     #prediction on validation data using best k=6
+cmk <- confusionMatrix(knn.pred.valid,valid_dummy[,16])    #confusion matrix 
+cmk$byClass[2]
+fourfoldplot(cmk$table, color = c("cyan", "pink"),
+             conf.level = 0, margin = 1, main = "Confusion Matrix for KNN")     # plot confusion ma
+cmk
+```
+
+#### Lift Chart
+
+```{r}
+#Extracting the probabilities
+knn_outcome <- as.data.table(cbind(as.data.table(knn.pred.valid), knn_prob = attr(knn.pred.valid, "prob")))
+
+# Adjusting probabilities
+knn_outcome[knn.pred.valid != 1, knn_prob := 1 - knn_prob]
+
+# plot
+liftChart(knn_outcome$knn_prob, factor(valid_dummy$is_claim))
+```
+
+```{r}
+topDecileLift(knn_outcome$knn_prob, factor(valid_dummy$is_claim))
+```
+
+.
+
+## Neural Network
+
+### Method application
+
+#### 1 hidden layer and 2 nodes
+
+```{r}
+# Run Neural Network (N.N.) with 1 hidden layer and 2 nodes
+nn_1H_2N <- neuralnet(is_claim ~ .,
+                    data = train_dummy_downsampled,
+                    hidden = 2) # 1 hidden layer of 2 nodes
+
+plot(nn_1H_2N, rep="best")
+
+
+# Predict the output on validation set
+validation_prediction_1H_2N <- predict(nn_1H_2N,
+                                      valid_dummy[,-16],
+                                      type = "class")
+
+validation_prediction_1H_2N_binary <-
+  ifelse(validation_prediction_1H_2N[,1]
+         >= 0.5, 1, 0) # Transform probabilities as binary outcome 
+```
+
+#### 1 hidden layer and 4 nodes
+
+
+We had to comment out the code related to the neural network with 4 nodes because it leads to an error most of the time, making the knitting impossible
+
+```{r}
+
+# run Neural Network (N.N.) with 1 hidden layer and 4 nodes
+# nn_1H_4N <- neuralnet(is_claim ~ .,
+#                    data = train_dummy_downsampled,
+#                    hidden = c(4)) # 1 hidden layer of 4 nodes
+                   
+
+
+
+
+# plot(nn_1H_4N, rep="best") # plots the neural net with 4 nodes
+
+
+# Predict the output on validation set
+# validation_prediction_1H_4N <- predict(nn_1H_4N,
+#                                      valid_dummy[,-16],
+#                                      type = "class")
+# 
+# validation_prediction_1H_4N_binary <-
+#  ifelse(validation_prediction_1H_4N[,1]
+#         >= 0.5, 1, 0) # Transform probabilities as binary outcome 
+```
+
+### Performance evaluation
+
+```{r}
+# Confusion matrix for classification tree with validation set
+conf_matrix_1H2N_valid <- confusionMatrix(
+  factor(validation_prediction_1H_2N_binary),
+  factor(valid_dummy$is_claim), # change dataset
+  positive = "1")
+
+conf_matrix_1H2N_valid
+
+# plot confusion matrix
+fourfoldplot(conf_matrix_1H2N_valid$table,
+            color = c("cyan", "pink"),
+            conf.level = 0,
+            margin = 1,
+            main = "Confusion Matrix for Neural Network
+            1 hidden layer of 2 nodes") 
+
+
+# Confusion matrix for classification tree with validation set
+# conf_matrix_1H4N_valid <- confusionMatrix(
+#   factor(validation_prediction_1H_4N_binary),
+#   factor(valid_dummy$is_claim), # change dataset
+#   positive = "1")
+# 
+# conf_matrix_1H4N_valid
+
+# plot confusion matrix
+# fourfoldplot(conf_matrix_1H4N_valid$table,
+#           color = c("cyan", "pink"),
+#           conf.level = 0,
+#           margin = 1,
+#           main = "Confusion Matrix for Neural Network
+#           1 hidden layer of 4 nodes")
+```
+
+## Logistic Regression
+
+### Method Application
+
+All variables logistic regression
+```{r}
+cars.lg <- glm(is_claim ~., data= train_downsampling, family=binomial(link="logit"))
+
+summary(cars.lg) # Displaying the resulting model
+```
+
+Plot of residuals
+```{r}
+PlotResidLogist(cars.lg) # Deviance residuals
+```
+
+
+analysis of the deviance with anova
+```{r}
+anova(cars.lg, test="Chisq")
+```
+
+
+backward selection
+```{r}
+cars_glm_back <- step(cars.lg, direction = "backward") # Model with backward selection
+summary(cars_glm_back)
+```
+
+
+forward selection
+```{r}
+cars_glm_forward <- step(cars.lg, direction = "forward") # Model with forward selection
+summary(cars_glm_forward)
+```
+
+
+backward+forward selection
+```{r}
+cars_glm_both <- step(cars.lg, direction = "both") # Forward and backward
+summary(cars_glm_both)
+```
+
+
+
+### Performance Evaluation
+
+Confusion Matrix for logistic regression with all variables
+```{r}
+# Full model
+pred_logi <- predict(cars.lg, newdata = cars_validation[,-16], type = "response")
+
+# 50% cutoff
+logi_outcome <- as.data.table(pred_logi)
+logi_outcome <- ifelse(logi_outcome > 0.5, 1, 0)
+
+
+#Confusion Matrix
+cm1 <- confusionMatrix(
+  factor(logi_outcome),
+  factor(cars_validation$is_claim), 
+  positive = "1")
+#Plot
+fourfoldplot(cm1$table,
+             color = c("cyan", "pink"),
+             conf.level = 0,
+             margin = 1,
+             main = "Confusion Matrix for the full logistic regression") 
+```
+
+
+Confusion Matrix for logistic regression with all variables and 55% cutoff
+```{r}
+# cutoff at probability of 0.55
+logi_outcome <- as.data.table(pred_logi)
+logi_outcome <- ifelse(logi_outcome > 0.55, 1, 0)
+
+#Confusion Matrix
+cm2 <- confusionMatrix(
+  factor(logi_outcome),
+  factor(cars_validation$is_claim), 
+  positive = "1")
+#Plot
+fourfoldplot(cm2$table,
+             color = c("cyan", "pink"),
+             conf.level = 0,
+             margin = 1,
+             main = "Confusion Matrix for the full logistic regression") 
+```
+
+
+
+Confusion matrix for logistic regression with reduced number of variables
+```{r}
+# Backward/Both 
+cars.lg2 <- glm(is_claim ~ policy_tenure+age_of_car , data= train_downsampling, family=binomial(link="logit"))
+pred_logi_back <- predict(cars.lg2, newdata = cars_validation[,-16], type = "response")
+
+# 50% cutoff
+logi_outcome_back <- as.data.table(pred_logi_back)
+logi_outcome_back <- ifelse(logi_outcome_back > 0.5, 1, 0)
+
+#Confusion Matrix
+cm3 <- confusionMatrix(
+  factor(logi_outcome_back),
+  factor(cars_validation$is_claim), 
+  positive = "1")
+#Plot
+fourfoldplot(cm3$table,
+             color = c("cyan", "pink"),
+             conf.level = 0,
+             margin = 1,
+             main = "Confusion Matrix for the reduced logistic regression") 
+```
+
+
+Reduced model performance metrics
+```{r}
+# Accuracy
+cm3$overall["Accuracy"]
+#Sensitivity
+cm3$byClass["Sensitivity"]
+#Specificity
+cm3$byClass["Specificity"]
+```
+
+Reduced model with the full training dataset instead of the downsample
+```{r}
+# Backward/Both 
+cars.lg3 <- glm(is_claim ~ policy_tenure+age_of_car , data= cars_train, family=binomial(link="logit"))
+pred_logi_back2 <- predict(cars.lg3, newdata = cars_validation[,-16], type = "response")
+
+# 6% cutoff
+logi_outcome_back2 <- as.data.table(pred_logi_back2)
+logi_outcome_back2 <- ifelse(logi_outcome_back2 > 0.06, 1, 0)
+
+#Confusion Matrix
+cm4 <- confusionMatrix(
+  factor(logi_outcome_back2),
+  factor(cars_validation$is_claim), 
+  positive = "1")
+#Plot
+fourfoldplot(cm4$table,
+             color = c("cyan", "pink"),
+             conf.level = 0,
+             margin = 1,
+             main = "Confusion Matrix for the reduced logistic regression") 
+```
+
+Accuracy
+```{r}
+# Accuracy
+cm4$overall["Accuracy"]
+```
+
+
+
+Lift Chart
+```{r}
+logi_outcome <- as.data.table(pred_logi_back)
+
+liftChart(factor(logi_outcome$pred_logi_back) , factor(cars_validation$is_claim))
+```
+
+topdecile
+```{r}
+topDecileLift(factor(logi_outcome$pred_logi) , factor(cars_validation$is_claim))
+```
+
+
+
+
+## Ensemble
+
+
+
+### Methods's application
+
+Extracting probabilities and prediction of each model
+```{r}
+#Actual outcome
+actual_outcome <- cars_validation[,6]
+
+# Classification Tree
+tree.outcome2 <- cbind(as.data.frame(tree.outcome),tree_prob=tree.outcome)
+tree.outcome2$tree.outcome <- ifelse(tree.outcome2$tree.outcome>0.5,1,0)
+colnames(tree.outcome2) <- c("tree_pred","tree_prob")
+
+#KNN
+knn_outcome2 <- as.data.frame(knn_outcome)
+colnames(knn_outcome2) <- c("knn_pred", "knn_prob")
+
+#Neural Network
+nn_outcome2 <- data.frame(validation_prediction_1H_2N[,1])
+nn_outcome2 <- cbind(ifelse(nn_outcome2>=0.5, 1, 0), nn_outcome2)
+colnames(nn_outcome2) <- c("nn_pred","nn_prob")
+
+#Logistic Regression
+logi_outcome2 <- cbind( logi_outcome, logi_outcome)
+colnames(logi_outcome2) <- c("logi_pred","logi_prob")
+logi_outcome2$logi_pred <- ifelse(logi_outcome2$logi_pred>0.5,1,0)
+
+ensemble <- data.table(actual_outcome,tree.outcome2,knn_outcome2,nn_outcome2,logi_outcome2)
+
+```
+
+Computing average probability and majority vote
+```{r}
+# Average probabilities column
+ensemble[, avg_prob := (logi_prob + knn_prob + tree_prob + nn_prob) / 4]
+
+# # Majority vote
+ensemble[, maj_vote := as.numeric(as.character(logi_pred))+ as.numeric(as.character(knn_pred)) + as.numeric(as.character(tree_pred))+ as.numeric(as.character(nn_pred))]
+
+ensemble[, maj_vote := ifelse(maj_vote >= 3, 1, 0)]
+
+# Display first 10 rows
+kable(ensemble[1:10, ], format = "markdown")
+```
+
+### Performance Evaluation
+
+Confusion matrix for the average probability approach
+```{r}
+#Confusion Matrix 
+cm_ens_prob <- confusionMatrix(
+  factor(ifelse(ensemble$avg_prob > 0.5, 1 ,0)),
+  factor(cars_validation$is_claim), 
+  positive = "1")
+#Plot
+fourfoldplot(cm_ens_prob$table,
+             color = c("cyan", "pink"),
+             conf.level = 0,
+             margin = 1,
+             main = "Confusion Matrix Ensemble Average Probability") 
+```
+
+Perfomance metrics average probability
+```{r}
+# Accuracy
+cm_ens_prob$overall["Accuracy"]
+#Sensitivity
+cm_ens_prob$byClass["Sensitivity"]
+#Specificity
+cm_ens_prob$byClass["Specificity"]
+```
+
+Confusion matrix for the majority vote approach
+```{r}
+cm_ens_maj <- confusionMatrix(
+  factor(ensemble$maj_vote),
+  factor(cars_validation$is_claim), 
+  positive = "1")
+#Plot
+fourfoldplot(cm_ens_maj$table,
+             color = c("cyan", "pink"),
+             conf.level = 0,
+             margin = 1,
+             main = "Confusion Matrix Ensemble Majority vote") 
+```
+
+Performance metrics majority vote
+```{r}
+# Accuracy
+cm_ens_maj$overall["Accuracy"]
+#Sensitivity
+cm_ens_maj$byClass["Sensitivity"]
+#Specificity
+cm_ens_maj$byClass["Specificity"]
+```
+
+
+
+# All methods comparison
+
+Overall, we are interested in a balance between Sensitivity and Specificity as we need to identify correctly claimed files, but also to avoid mistakes in negatives predictions. The situation is tricky since that situation corresponds to a trade-off. Accepting a little decrease in specificity would provide a lot of misclassified negative outcomes given the commonness of that class. On the other hand, accepting a little decrease in sensitivity would goe against or goal.
+
+## overall Accuracy
+
+```{r}
+Accuracy <-  data.frame(LR = round(cm3$overall[1],3))  #predict accuracy by using logistic regression 
+Accuracy <- cbind(Accuracy, KNN = round(cmk$overall[1],3))      #predict accuracy by using KNN
+Accuracy <- cbind(Accuracy,CT = round(conf_matrix_tree_v$overall[1],3))    #predict accuracy by using tree
+Accuracy <- cbind(Accuracy,NN=round(conf_matrix_1H2N_valid$overall[1],3))     #predict accuracy by using neural network
+Accuracy <- cbind(Accuracy,EM=round(cm_ens_maj$overall[1],3))     #predict accuracy ensemble majority 
+Accuracy <- cbind(Accuracy,EA=round(cm_ens_prob$overall[1],3))     #predict accuracy ensemble average 
+
+Accuracy.melt = melt(Accuracy)
+ggplot(data = Accuracy.melt,aes(x=reorder(variable, value),y=value))+
+  ylab("Accuracy") + 
+  xlab("Method") +
+  geom_bar(stat="identity", fill="steelblue")+
+  geom_text(aes(label=value), vjust=1.6, color="white", size=3.5)+
+  theme_minimal()
+```
+
+## overall Specificity
+
+```{r}
+Specificity_P <-  data.frame(LR = round(cm2$byClass[2],3))  #predict specificity by using logistic regression 
+Specificity_P <- cbind(Specificity_P, KNN = round(cmk$byClass[2],3))       #predict specificity by using KNN
+Specificity_P <- cbind(Specificity_P,CT = round(conf_matrix_tree_v$byClass[2],3))     #predicts specificity tree
+Specificity_P <- cbind(Specificity_P,NN=round(conf_matrix_1H2N_valid$byClass[2],3))    #predict specificity neural network
+Specificity_P <- cbind(Specificity_P,EM=round(cm_ens_maj$byClass[2],3))    #predict specificity majority voting 
+Specificity_P <- cbind(Specificity_P,EA=round(cm_ens_prob$byClass[2],3))    #predict specificity ensemble average 
+
+Specificity_P.melt = melt(Specificity_P)
+ggplot(data = Specificity_P.melt,aes(x=reorder(variable, value),y=value))+
+  ylab("Specificity") + 
+  xlab("Method") +
+  geom_bar(stat="identity", fill="steelblue")+
+  geom_text(aes(label=value), vjust=1.6, color="white", size=3.5)+
+  theme_minimal()
+
+```
+
+## overall Sensitivity
+
+```{r}
+Sensitivity <-  data.frame(LR = round(cm2$byClass[1],3))  #predict Sensitivity by using logistic regression 
+Sensitivity <- cbind(Sensitivity, KNN = round(cmk$byClass[1],3))       #predict Sensitivity by using KNN
+Sensitivity <- cbind(Sensitivity,CT = round(conf_matrix_tree_v$byClass[1],3))     #predicts Sensitivity  tree
+Sensitivity <- cbind(Sensitivity,NN=round(conf_matrix_1H2N_valid$byClass[1],3))    #predict Sensitivity  neural network
+Sensitivity <- cbind(Sensitivity,EM=round(cm_ens_maj$byClass[1],3))    #predict Sensitivity majority voting 
+Sensitivity <- cbind(Sensitivity,EA=round(cm_ens_prob$byClass[1],3))    #predict Sensitivity ensemble average 
+
+Sensitivity.melt = melt(Sensitivity)
+ggplot(data = Sensitivity.melt,aes(x=reorder(variable, value),y=value)) +
+  ylab("Sensitivity") + 
+  xlab("Method") +
+  geom_bar(stat="identity", fill="steelblue")+
+  geom_text(aes(label=value), vjust=1.6, color="white", size=3.5)+
+  theme_minimal()
+```
